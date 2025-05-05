@@ -9,5 +9,5 @@ app.get('/', (req, res) => {
 
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log('The server is running on ' + process.env.PORT || 3000);
+    console.log('The server is running on (cicd)' + process.env.PORT || 3000);
 })
