@@ -10,6 +10,9 @@ app.get('/', (req, res) => {
 app.get('/dashboard', (req, res) => {
     return res.json('Hi, this is dashboard page');
 })
+app.get('/about', (req, res) => {
+    return res.json('this is about page');
+})
 
 app.listen(process.env.PORT || 3000, () => {
     console.log('The server is running on (cicd)' + process.env.PORT || 3000);
