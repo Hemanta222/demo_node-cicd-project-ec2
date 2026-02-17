@@ -1,33 +1,94 @@
-name: Deploy to EC2
+name: CI/CD Node.js App with ECR & Rollback
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  ECR_REPO: ${{ secrets.ECR_REPO }}
+  IMAGE_TAG: ${{ github.sha }}
+  ECR_URI: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPO }}
 
 jobs:
-  deploy:
+  build-test-scan-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    # 1️⃣ Checkout code
+    - name: Checkout source code
+      uses: actions/checkout@v4
 
-    - name: Set up SSH
-      uses: webfactory/ssh-agent@v0.7.0
+    # 2️⃣ Setup Node.js
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+        node-version: 20
 
-    - name: Copy files to EC2
-      run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "rm -rf app && mkdir app"
-        scp -o StrictHostKeyChecking=no -r ./* ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/app/
+    # 3️⃣ Install dependencies
+    - name: Install dependencies
+      run: npm ci
 
-    - name: Deploy on EC2
+    # 4️⃣ Run tests
+   # - name: Run npm tests
+  #    run: npm test
+
+    # 5️⃣ Configure AWS credentials (IAM-based)
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    # 6️⃣ Login to Amazon ECR
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # 7️⃣ Build Docker image
+    - name: Build Docker image
       run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
-          cd ~/app
-          docker stop node-demo || true
-          docker rm node-demo || true
-          docker build -t node-demo .
-          docker run -d -p 3000:3000 --name node-demo node-demo
-        EOF
+        docker build -t $ECR_URI:$IMAGE_TAG .
+        docker tag $ECR_URI:$IMAGE_TAG $ECR_URI:latest
+
+    # 8️⃣ Trivy security scan (FAIL on HIGH / CRITICAL)
+    - name: Trivy vulnerability scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.ECR_URI }}:${{ env.IMAGE_TAG }}
+        severity: HIGH,CRITICAL
+        exit-code: 1
+        ignore-unfixed: true
+
+    # 9️⃣ Push image to ECR
+    - name: Push image to Amazon ECR
+      run: |
+        docker push $ECR_URI:$IMAGE_TAG
+        docker push $ECR_URI:latest
+
+    # 🔟 Deploy to EC2 via AWS SSM (NO SSH)
+    - name: Deploy using AWS SSM
+      run: |
+        aws ssm send-command \
+          --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+          --document-name "AWS-RunShellScript" \
+          --comment "Deploy Node.js app via GitHub Actions" \
+          --parameters commands='[
+            "set -e",
+            "PREVIOUS_IMAGE=$(docker ps --filter name=node-app --format {{.Image}} || true)",
+            "docker pull '"$ECR_URI:$IMAGE_TAG"'",
+            "docker stop node-app || true",
+            "docker rm node-app || true",
+            "docker run -d --name node-app -p 3000:3000 --restart always '"$ECR_URI:$IMAGE_TAG"'",
+            "sleep 15",
+            "if ! docker ps | grep node-app; then",
+            "  echo Deployment failed. Rolling back...",
+            "  if [ ! -z \"$PREVIOUS_IMAGE\" ]; then",
+            "    docker run -d --name node-app -p 3000:3000 --restart always $PREVIOUS_IMAGE",
+            "  fi",
+            "  exit 1",
+            "fi"
+          ]' \
+          --timeout-seconds 600
