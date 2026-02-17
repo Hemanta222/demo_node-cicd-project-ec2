@@ -26,8 +26,8 @@ jobs:
       run: |
         ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
           cd ~/app
-          docker stop node-app || true
-          docker rm node-app || true
-          docker build -t node-app .
-          docker run -d -p 3000:3000 --name node-app node-app
+          docker stop node-demo || true
+          docker rm node-demo || true
+          docker build -t node-demo .
+          docker run -d -p 3000:3000 --name node-demo node-demo
         EOF
