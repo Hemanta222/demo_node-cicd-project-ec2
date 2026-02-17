@@ -13,29 +13,25 @@ env:
   ECR_URI: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPO }}
 
 jobs:
-  build-test-scan-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-    # 1️⃣ Checkout code
-    - name: Checkout source code
+    - name: Checkout source
       uses: actions/checkout@v4
 
-    # 2️⃣ Setup Node.js
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: 20
 
-    # 3️⃣ Install dependencies
     - name: Install dependencies
       run: npm ci
 
-    # 4️⃣ Run tests
-   # - name: Run npm tests
-  #    run: npm test
+    # Uncomment once tests are stable
+    # - name: Run tests
+    #   run: npm test
 
-    # 5️⃣ Configure AWS credentials (IAM-based)
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -43,52 +39,42 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
-    # 6️⃣ Login to Amazon ECR
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    # 7️⃣ Build Docker image
     - name: Build Docker image
       run: |
         docker build -t $ECR_URI:$IMAGE_TAG .
-        docker tag $ECR_URI:$IMAGE_TAG $ECR_URI:latest
 
-    # 8️⃣ Trivy security scan (FAIL on HIGH / CRITICAL)
-    #- name: Trivy vulnerability scan
-    #  uses: aquasecurity/trivy-action@master
-    #  with:
-    #    image-ref: ${{ env.ECR_URI }}:${{ env.IMAGE_TAG }}
-    #   severity: HIGH,CRITICAL
-    #    exit-code: 1
-    #    ignore-unfixed: true
-
-    # 9️⃣ Push image to ECR
-    - name: Push image to Amazon ECR
+    - name: Push Docker image
       run: |
         docker push $ECR_URI:$IMAGE_TAG
-        docker push $ECR_URI:latest
 
-    # 🔟 Deploy to EC2 via AWS SSM (NO SSH)
-    - name: Deploy using AWS SSM
+    - name: Deploy via AWS SSM
       run: |
         aws ssm send-command \
           --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
           --document-name "AWS-RunShellScript" \
-          --comment "Deploy Node.js app via GitHub Actions" \
+          --comment "Deploy Node.js app" \
           --parameters commands='[
             "set -e",
-            "PREVIOUS_IMAGE=$(docker ps --filter name=node-app --format {{.Image}} || true)",
-            "docker pull '"$ECR_URI:$IMAGE_TAG"'",
-            "docker stop node-app || true",
-            "docker rm node-app || true",
-            "docker run -d --name node-app -p 3000:3000 --restart always '"$ECR_URI:$IMAGE_TAG"'",
-            "sleep 15",
-            "if ! docker ps | grep node-app; then",
-            "  echo Deployment failed. Rolling back...",
-            "  if [ ! -z \"$PREVIOUS_IMAGE\" ]; then",
-            "    docker run -d --name node-app -p 3000:3000 --restart always $PREVIOUS_IMAGE",
-            "  fi",
-            "  exit 1",
-            "fi"
+            "APP_NAME=node-app",
+            "NEW_IMAGE='"$ECR_URI:$IMAGE_TAG"'",
+            "",
+            "echo Pulling new image",
+            "docker pull $NEW_IMAGE",
+            "",
+            "echo Removing ALL old containers",
+            "docker ps -aq --filter name=$APP_NAME | xargs -r docker rm -f",
+            "",
+            "echo Starting new container",
+            "docker run -d --name $APP_NAME -p 3000:3000 --restart always $NEW_IMAGE",
+            "",
+            "sleep 10",
+            "",
+            "echo Validating application",
+            "curl -f http://localhost:3000/health || exit 1",
+            "",
+            "echo Deployment successful"
           ]' \
           --timeout-seconds 600
