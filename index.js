@@ -13,10 +13,7 @@ app.get('/dashboard', (req, res) => {
 app.get('/about', (req, res) => {
     return res.json('this is about page');
 })
-app.get('/contact-us', (req, res) => {
-    console.log('contact-us req.path', req.path);
-    return res.json('this is contact-us page');
-})
+
 app.listen(process.env.PORT || 3000, () => {
     console.log('The server is running on (cicd)' + process.env.PORT || 3000);
 })
